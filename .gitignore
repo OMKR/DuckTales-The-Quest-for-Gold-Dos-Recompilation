@@ -1,0 +1,19 @@
+# The game and everything made from it: never in the repository
+files/
+unpacked/
+gen/
+build/
+dist/
+build_tmp/
+toolchain/
+analysis.json
+missing_entries.txt
+seg_dump.bin
+*.raw
+*.bmp
+
+# Python
+__pycache__/
+
+# one-time patch helper from development
+tools/_patch_ptr.py

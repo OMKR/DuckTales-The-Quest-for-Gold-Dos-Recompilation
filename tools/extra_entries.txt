@@ -1,0 +1,8 @@
+# Function entry points reached only through near pointers in data.
+# Format: image cs ip (hex). The runtime prints missing ones as
+# "MISSING ENTRY img cs ip" and appends them to build/missing_entries.txt.
+# 040E:0994 calls display detection routines from the table at DS:2124
+0 040e 09d2
+0 040e 0a22
+0 040e 0a4f
+0 040e 0a5f
