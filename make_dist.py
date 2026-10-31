@@ -77,8 +77,9 @@ def main():
     # licences
     shutil.copyfile(sdl.parent / "LICENSE.txt", OUT / "licenses/SDL2-LICENSE.txt")
     (OUT / "licenses/fonts.txt").write_text(FONTS)
-    # .ipf disk images: the SPS decoder library, if at hand (.adf works without)
-    caps = Path(os.environ.get("CAPS_DLL", ROOT.parent / "ducktales" / "build" / "CAPSImg.dll"))
+    # .ipf disk images: the SPS decoder library, if at hand (.adf works without);
+    # put it in toolchain/ (not in the repository) or name it in CAPS_DLL
+    caps = Path(os.environ.get("CAPS_DLL", ROOT / "toolchain" / "CAPSImg.dll"))
     if caps.exists():
         shutil.copyfile(caps, OUT / "CAPSImg.dll")
         copy("launcher/CAPSImg-LICENCE.txt", OUT / "licenses")

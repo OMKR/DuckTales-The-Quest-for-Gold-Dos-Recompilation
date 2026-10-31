@@ -171,8 +171,17 @@ python build.py         # game in files/ -> build/ducktales_dos, build/settings
 - Amiga sound option: `build.py` uses the Amiga game folder in `AMIGA`
   (default `../ducktales/files`).
 - `.ipf` disk image import: `make_dist.py` adds `CAPSImg.dll` (the SPS
-  decoder) from `CAPS_DLL` (default `../ducktales/build/CAPSImg.dll`) if
-  present; `.adf` images work without it.
+  decoder) from `toolchain/CAPSImg.dll` (or the file named in `CAPS_DLL`)
+  if present; `.adf` images work without it. It is not in the repository
+  (its licence allows passing it on unchanged, not as part of this
+  project's source). To get it:
+  1. Download the Windows zip of Greaseweazle v1.23 from
+     https://github.com/keirf/greaseweazle/releases (the file used here
+     came from it), or the IPF decoder library from https://www.softpres.org.
+  2. Take `CAPSImg.dll` out of it. It must be the 64-bit (x64) version,
+     like the settings program.
+  3. Put it in `toolchain/` and run `python make_dist.py`; the package then
+     has `CAPSImg.dll` and `licenses/CAPSImg-LICENCE.txt`.
 
 `build.sh` and `make_dist.sh` are wrappers for the same scripts.
 
