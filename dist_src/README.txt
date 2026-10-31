@@ -53,6 +53,17 @@ These can be changed in the settings program (ducktales_dos.ini):
   Volume.
 - Fullscreen, window size, controls, controller dead zone, keyboard mode.
 - Jungle nephew order: DOS (red, blue, green) or Amiga (green, blue, red).
+- Photo flash (EGA): border (as on the PC), screen or off.
+- Rival plane: collides (the rival's plane is hit by obstacles as yours
+  and dodges most of them) or original.
+- Music at Launchpad (Amiga sound): stops (as the Amiga game) or plays
+  on (as the DOS game).
+- PC speaker sound: original (a filter imitates the small speaker inside a
+  PC: thin, almost no bass) or clean (the sounds as the game makes them).
+- Log file: on = one file per run in the logs folder, with the date
+  and time in its name. Send it with a crash report.
+- Random numbers: Fixed (no short repeating sequences) or Original
+  (as the PC game).
 - The code wheel check (copy protection).
 
 The Amiga version

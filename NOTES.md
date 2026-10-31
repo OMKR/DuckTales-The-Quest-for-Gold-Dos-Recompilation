@@ -172,11 +172,21 @@ the runtime answers its probes as the chosen card would:
   flush right after waiting for a timer tick and then read a key; on the
   original PC the pass was mostly drawing, recompiled it is mostly waiting,
   so the flush swallowed the keys (the plane could not be chosen).
-  `hook_keyboard_flush` keeps a key pressed in the last 150 ms, but only
-  when the game's key reader has not returned it yet (hook_key_read at
-  040E:1A35). Keeping a read key made one press move or fire twice: the
-  cave reads a key, moves, then flushes. A held key comes again with the
-  typematic repeat, as on the PC.
+  The destination screen (overlay 2, 0CE1:1177-11EE) loops: wait two
+  ticks (040E:0DCC), flush, draw, read the keys (0124:0002). On the PC
+  most of a pass was drawing, so a key came after the flush; recompiled,
+  the drawing takes no time and every key came during the wait and was
+  flushed (the plane could not be chosen). hook_keyboard_flush does the
+  flush itself (BIOS buffer, key table DS:276C) and leaves: a key pressed
+  that the game's key reader has not looked at yet, while the game is
+  waiting for one (since the last flush its reader found no new press;
+  key_unseen / read_new, set by hook_key_read at 040E:1A35); and a key
+  held down until it repeats (typematic, after 500 ms; the repeats, every
+  92 ms, are rarer than some loops' passes, so a held key dropped out).
+  When the game has had a new press since the last flush, it is acting on
+  it and the flush takes away all else, as on the PC: the cave reads fire
+  and a direction, walks, flushes (keeping keys pressed during the walk
+  made it choose again in the next cave). No time window.
 
 ## Game speed, frame rate, music speed
 
@@ -322,6 +332,166 @@ error now prints the bad displacement and location.
   other requests are dropped there); the speaker driver's request entry
   (module 5, 0x408) is forwarded too. Its output is mixed over the DOS
   sound.
+- Random numbers (040E:0EB8): x = ror3(x + 0x9248), 16 bits, seeded
+  (040E:0E01, when a game starts) from the BIOS tick count 0040:006C. The
+  runtime counted the ticks from 0, so the seed was nearly the same in
+  every session. The generator's main cycle is 63331 values, but 2205
+  seeds fall into short cycles (716, 654, 494, 119, 84, 82, 54 values, 2
+  fixed points), about 3.4 % of seeds; r % n is slightly uneven (r % 6:
+  14 % to 18 %). The ticks now start at the time of day as on a PC
+  (headless runs keep 0, repeatable). Setting fixed_random ("Random
+  numbers", default Fixed): hook_random_seed (040E:0E0D) steps a seed off
+  the main cycle onto it (x = ror3(x + 0x1235), at most 3 steps).
+  Original: the seed as it comes, as the PC game.
+- Photography flash. DOS (overlay 7, 09B0 / 0A2D): after the shot the
+  game sets the EGA border colour (overscan, palette table byte DS:2066,
+  attribute 11h) to 7 for 4 redraws, then 0; EGA only (DS:2042). The
+  runtime ignored the border (port 3C0h index 11h, INT 10h 1001h and the
+  17th byte of 1002h); it is now kept (video_overscan). The window has no
+  border area: setting ega_flash ("Photo flash (EGA)") draws it as a frame
+  over the picture's edge (border, default), tints the screen (screen) or
+  not (off). Amiga (node 7 0xC32): for the first redraw after the shot the
+  photography palette (table entry 8) gives way to the flash palette
+  (entry 9: colours 1-7 and 16-29 white); amiga_render shows it for 40 ms
+  when the border lights up.
+- Music before a scene's first voice: the Amiga office (Launchpad's
+  greeting, node 1 0x7EC-0x800) and the campfire (node 0 0x386-0x3AE)
+  request sound 0x21 (channel 3; it ends the music on channel 0), wait for
+  channel 0 ($2A16), stop all (request 0), then speak. The DOS game keeps
+  the map's music until the plane overlay has loaded (Launchpad), or stops
+  it just after the picture (campfire, 02BB:0141), so the voice was spoken
+  over the music. voice_after_jingle (amigasnd.c) does the Amiga's order
+  (not with Tandy / speaker sound). Checked the other voices: the cave's
+  fall (0x48) and the landing stop the music before the voice in both
+  versions; the cave's other lines, the map, the treasure and the scales'
+  result stop it in neither.
+- The plane's crash and stunt animations (the spin, the whale's spout,
+  ...; overlay 4 loops that step on the page flip alone, e.g. 0B85, 0EAE)
+  ran at one step per retrace, 60 a second; the main loop is paced by
+  game ticks (6 per step, 0C17:01FF) and flips at 0C17:02A3. retrace_pct
+  now gives the plane two retraces per frame after a flip from elsewhere
+  (plane_main_flip, core86.c): 30 steps a second, as the other minigames;
+  the main loop is unchanged. The Amiga version steps these loops once per
+  50 Hz frame (its flip 0x307C) plus its drawing time.
+- Log file (settings.log, "Log file"): log86.c sends stderr to
+  logs/ducktales_YYYYMMDD_HHMMSS.log beside the program (unbuffered),
+  one per run: the start, the settings, each overlay, the exit, and all
+  the runtime's error output. A crash (signal, or on Windows an unhandled
+  exception or a fail-fast heap corruption / stack overrun) writes its
+  code and address, the registers, the overlay, the recent functions and
+  the return stack (crash_dump, core86.c).
+- Crash (heap corruption, Windows c0000374): with the Amiga graphics the
+  sprite table (MAX_SPRITES 160) fills up in a long game; dropping the
+  oldest moved the entries down and left the last slot holding a copy of
+  its neighbour's pointers, so a new sprite inherited `sub` and it was
+  freed twice. The oldest's `sub` is now freed too and a new slot is
+  cleared. Found with an AddressSanitizer / UBSan build (gcc in WSL, an
+  SDL stub, headless random-key runs of 150000 frames: 2 of 8 crashed in
+  the jungle); after the fix 16 such runs and all minigames in EGA and
+  Amiga mode ran clean.
+- The plane's balloon (PLANE.ARC 17) was sometimes drawn in EGA in the
+  Amiga mode: the map copies into the DOS memory the balloon had been
+  loaded into, and a copy into a sprite's memory ended the sprite for
+  good (its px freed and lin cleared), so later flights drew the EGA
+  data. Such a copy now only marks the sprite stale; when it is next
+  drawn its DOS data (planes and mask) is checked against the checksum
+  taken when it was loaded, and the Amiga sprite is kept if they match.
+- Sprite table full (MAX_SPRITES 160, a long game): the one unused
+  longest is dropped (Sprite.used, set when loaded or drawn), not the
+  oldest loaded: a sprite loaded early and still drawn (e.g. a status bar
+  picture) was dropped and then shown in EGA. Checked with 16 sanitizer
+  runs of 150000 frames in which the table filled up: clean. All 45 plane
+  sprites load their Amiga version (26 and 27 differ in size and are
+  padded as before).
+- The plane game's rival (settings.rival_collisions, "Rival plane",
+  default collides; rival86.c). Original: the rival (DS:5ED4 set when it
+  races to the same place) is scripted in the scenery function 0C17:0F78:
+  2 pixels per column drawn (DS:4D4C in column DS:8D7C, 80 pixels), a
+  fixed height (object DS:5D12, PLANE.ARC 59), a landing in the last three
+  columns; nothing hits it. The player's collisions are 0C17:261F (its box
+  DS:36C8-36D4 from per-angle offsets at DS:0F6A/0F7A/0F8A/0F9A against
+  the column's obstacles, table DS:79F2, 14 bytes each, first per column at
+  DS:4F44; per-type boxes and outcomes). Now that test runs for the rival:
+  DS, CPU and FPU saved, the player's box, position, angle and column set
+  to the rival's (relative to its column), drawing, sound and keyboard
+  flush held back (rival_probe), polls off; a change of the angle, crash
+  flags FB6-FB8, FC0, position or speed is a hit; all put back. A hit
+  spins it through its 16 turning frames twice, dips it 16 pixels and holds
+  its progress (DS:8D7C/4D4C put back each step). Ahead (40, 80, 120 px) it
+  tests the same way; for a new obstacle it decides once, 3 in 4, to dodge
+  to the nearest clear height, and goes back to its height only when that
+  is clear. Hooks 0C17:0F84, 132B (step), 1139, 113E (drawing; 113E is
+  passed for every column). Turning frames: its own sprite turned 22.5
+  degrees a frame anticlockwise like the player's PLANE.ARC 61, 8x8
+  sub-sample majority per pixel, DOS colours (strip at D000:0000, mask
+  plane) and Amiga pens (a sprite at that address). Checked: 10 flights
+  (dodged when it chose to, hit when not) and 8 sanitizer flights, clean.
+- Map destinations (015A:00D7): the 34 places (type and level from the
+  data file, +0x24: low nibble the minigame, high nibble its level; the
+  mountain overlay's levels 0-2 are fixed layouts, its one random number
+  a horizontal position, as in the Amiga node 6) are placed in turn from
+  start rand % 30 with step rand % 5. Two consecutive numbers of the
+  game's generator are tied: for each start only 2 steps come, 60 of the
+  150 maps. With fixed_random, hook_map_shuffle (015A:01F6) takes both from
+  one hash of the generator's state: all 150 (simulated over all seeds,
+  384-490 seeds each). The seed is set before the shuffle (checked).
+- Settings program: the window opens at 1.5 times its 720x760 layout, or
+  smaller to fit the screen's usable area (SDL_GetDisplayUsableBounds,
+  less 60 px for the title bar; 1080p: 920x972); it can be resized. Every
+  item has a help text of up to three lines (draw_wrapped). Restore
+  defaults keeps the game folders.
+- PC speaker sound (settings.speaker_filter, "PC speaker sound", default
+  clean). The speaker music is one voice, notes about 100-900 Hz, a square
+  wave from PIT channel 2: as the original. Heard through today's speakers
+  its bass notes (100-250 Hz) are full, unlike a 2-inch cone in a PC case.
+  Original: the square wave goes through a 350 Hz high-pass, +5 dB at
+  2.5 kHz and a 5.5 kHz low-pass (RBJ biquads, speaker_out in chips86.c),
+  gain 1.2 to keep the loudness. Not applied to Tandy or Amiga sound.
+- Draw-then-wait animations (as the scales): a loop draws, then waits
+  n ticks from now (040E:0DCC(0), then 0DCC(n): the 0 sets the base to
+  now); on the PC the drawing time came on top of each step, here it is
+  nearly nothing. Found by listing every loop with a page flip and a tick
+  wait and weighing its drawing (screen copies, sprites, texts) against
+  its wait. Slowed ticks (tick_pct, hooks86.c hook_slow_*): the opening
+  dialogue 02F5:0168/0338 80 % (2 screen copies and 10 sprites then 7
+  ticks; its pages ran 1.1-2.7 s, now about 2.5-4 s; the Amiga version
+  shows them 1.2-3.6 s), the title menus 02F5:0AEB 85 % and 02F5:0D89
+  80 %, the destination screen (overlay 2, 0C17:02E4) 55 %, the cave's
+  fall (overlay 6, 0C17:160D-1661, one tick a step) 40 %, the money bin
+  (overlay 9) 90 %, the scales (3) 40 % as before. The other such loops
+  wait longer than they draw (their step is the wait either way).
+- The scales' beam (overlay 3, 0C17:06D0-08E4) steps on the vertical
+  retrace alone (no tick wait), each step a full-screen copy, two sprites
+  and both sums of money: the 40 % tick rate did not touch it. Overlay 3
+  now has a retrace every third frame (retrace_pct 33): 33 -> 50 ms a
+  step (measured with forced day 31 and different sums).
+- Launchpad's greeting on the second trip on had no voice (or a late one):
+  voice_after_jingle requested sound 0x21 and waited for channel 0 to end
+  before stopping the music and speaking, as the Amiga office does; from
+  the second trip the map's music played on channel 0 and 0x21 did not end
+  it, so the voice waited up to its 20 s limit (4.9 s in a test) and the
+  plane overlay came first. Now the music is stopped directly
+  (stop_music) and the voice starts at once (campfire too). Setting
+  launchpad_stop ("Music at Launchpad", Amiga sound, default stops): the
+  music stops when Launchpad's picture (MAIN.ARC 30) loads, as the Amiga
+  game; off: it plays on under his screen, as the DOS game.
+  The engine's stop (request 0) runs a short program on channel 0 from
+  its next tick, and a voice started in the same tick was cut off after
+  0.04 s (no voice at all with stops). A voice now waits until that
+  program has ended (stopping, at most half a second).
+- Teleporter (DS:8EB4 = built, after the Bombastium; DS:7900 = this trip
+  by teleporter, office menu overlay 2 0C17:10CD): root 04BF requests its
+  sound 0x54 and goes on to the campfire (02BB:00FE) at once, as the Amiga
+  (node 1 0x618). The campfire's stop (02BB:0141) cut it off after 0.12 s
+  (the picture loads at once here); the Amiga campfire waits for channel 0
+  first. hook_campfire (02BB:013A, after the picture) waits on a teleporter
+  trip until the sound has ended: Amiga sound amigasnd_playing (its channel
+  1 runs on silent for 2.6 s, so 0.1 s of silence ends it; heard 3.6 s),
+  else the driver's own test (DS:2028, as after the failure sound 0x45 at
+  root 056B; Tandy 2.4 s). The campfire voice moved from the picture to
+  this hook (AMIGASND_CAMPFIRE).
+- Headless runs render no sound unless DT_WAV is set: voices never end
+  there, and waits for them run to their 20 s limit.
 - Treasure screen: the DOS code (root 0C3D, after the picture and the
   money) requests sound 0x49, its fanfare. In the Amiga engine 0x49 is a
   voice, and with the cave's set 0x18 still loaded it said the cave's
@@ -344,6 +514,10 @@ error now prints the bad displacement and location.
 graphics = 4 (GFX_AMIGA): the game sees an EGA card and its EGA driver
 still runs, but the screen is shown from surfaces with 12-bit RGB pixels
 (no palette limit) on which every drawing call of the driver is repeated:
+- The developer's logo on quitting (MAIN.ARC 1) is forced to table entry
+  16 (0xB466: black, blue-purple, a pale green ball; seen in the Amiga
+  game). The comparison picked 0xB4A6 (light grey, a red ball) or another,
+  depending on the EGA palette the previous screen left.
 - pictures (loader hook 040E:199F): the Amiga entry of the same archive
   (archives aligned by type and height), full-screen pictures with the
   Amiga palette that best matches the DOS picture, small ones (tiles,

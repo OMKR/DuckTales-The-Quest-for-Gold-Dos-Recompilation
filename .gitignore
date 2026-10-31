@@ -11,6 +11,8 @@ missing_entries.txt
 seg_dump.bin
 *.raw
 *.bmp
+logs/
+*.log
 
 # Python
 __pycache__/

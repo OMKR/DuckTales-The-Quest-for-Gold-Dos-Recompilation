@@ -76,6 +76,10 @@ typedef struct {
     int entry;             /* its entry in the Amiga archive */
     uint8_t *sub;          /* the scene archive's own version, or NULL */
     uint8_t sub_frame[64]; /* its frame for each frame (matched by colour) */
+    uint32_t data_len;     /* bytes of its DOS data (planes and mask) */
+    uint32_t data_sum;     /* their checksum when loaded */
+    int stale;             /* the game copied into its memory since */
+    uint32_t used;         /* when last loaded or drawn (use_clock) */
 } Sprite;
 
 static Surface pages[2];
@@ -83,6 +87,7 @@ static Surface surf[MAX_SURF];
 static int nsurf;
 static Sprite sprites[MAX_SPRITES];
 static int nsprites;
+static uint32_t use_clock;
 static uint32_t pals[NPALS][32];       /* ARGB; 0 = standard EGA */
 /* EGA colour -> palette index, learned from DOS/Amiga picture pairs:
  * votes[pal][ega][index] */
@@ -334,13 +339,16 @@ static const struct { const char *arc; int table; } scene_palette[] = {
 
 /* Single pictures the comparison gets wrong: the map's frame (MAIN.ARC 20)
  * is shown with the map (entry 22) and the office, all in 0xB126; the
- * treasure chest (35) was matched to a grey-blue palette. */
+ * treasure chest (35) was matched to a grey-blue palette; the logo (1)
+ * got 0xB4A6 (light grey, a red ball) or another, by the EGA palette left
+ * by the screen before it. */
 static const struct { const char *arc; int entry, table; } picture_palette[] = {
     {"MAIN.ARC", 20, 3},
     {"MAIN.ARC", 35, 18},    /* the treasure chest: gold on brown (0xB4E6) */
     {"MAIN.ARC", 41, 15},    /* the inventor (plane broken, Bombasium) */
     {"MAIN.ARC", 36, 22},    /* the winner's magazine cover: the player */
     {"MAIN.ARC", 37, 22},    /* ... and the rival (green hat) */
+    {"MAIN.ARC", 1, 16},     /* the developer's logo on quitting: black, blue (0xB466) */
 };
 
 static int same_name(const char *a, const char *b)
@@ -601,6 +609,34 @@ static int choose_palette(const Desc *d, const uint8_t *px, int w, int h)
     return best;
 }
 
+static uint32_t data_sum(uint32_t lin, uint32_t len)
+{
+    uint32_t h = 2166136261u;
+    for (uint32_t i = 0; i < len; i++) h = (h ^ mem[(lin + i) & 0xFFFFF]) * 16777619u;
+    return h;
+}
+
+/* A free slot in the sprite table. When it is full the one unused longest
+ * goes (the oldest loaded could still be in use, e.g. the status bar's
+ * pictures, loaded once; it was then drawn in EGA). */
+static Sprite *new_sprite(void)
+{
+    if (nsprites == MAX_SPRITES) {
+        int old = 0;
+        for (int k = 1; k < nsprites; k++) if (sprites[k].used < sprites[old].used) old = k;
+        free(sprites[old].px);
+        free(sprites[old].sub);
+        memmove(&sprites[old], &sprites[old + 1], sizeof(Sprite) * (size_t)(MAX_SPRITES - 1 - old));
+        nsprites--;
+    }
+    Sprite *sp = &sprites[nsprites++];
+    /* a fresh slot: after the shift the last one still held the pointers
+     * of the one before it (its `sub` was then freed twice, a heap
+     * corruption) */
+    memset(sp, 0, sizeof *sp);
+    return sp;
+}
+
 static Sprite *find_sprite(uint32_t lin)
 {
     for (int i = 0; i < nsprites; i++) if (sprites[i].lin == lin) return &sprites[i];
@@ -849,14 +885,7 @@ void hook_picture_loaded(void)
         free(px);
         px = more;
     }
-    if (!sp) {
-        if (nsprites == MAX_SPRITES) {
-            free(sprites[0].px);
-            memmove(&sprites[0], &sprites[1], sizeof(Sprite) * (MAX_SPRITES - 1));
-            nsprites--;
-        }
-        sp = &sprites[nsprites++];
-    }
+    if (!sp) sp = new_sprite();
     sp->lin = lin;
     sp->fw = w / frames;
     sp->h = h;
@@ -867,6 +896,42 @@ void hook_picture_loaded(void)
     sp->hw = hdr16(e, 3);
     sp->hh = hdr16(e, 4);
     sp->sub_arc = -1;
+    sp->data_len = 5u * rw(R.ds, R.ax + 0x10);
+    sp->data_sum = data_sum(lin, sp->data_len);
+    sp->stale = 0;
+    sp->used = ++use_clock;
+}
+
+/* The plane's rival (rival86.c): the Amiga pixels of a sprite, and a
+ * sprite made at run time (its turning frames) at DOS memory `lin`. */
+const uint8_t *amiga_sprite_px(uint32_t lin, int *fw, int *h, int *frames, int *arc)
+{
+    Sprite *sp = enabled ? find_sprite(lin) : NULL;
+    if (!sp || !sp->px) return NULL;
+    *fw = sp->fw;
+    *h = sp->h;
+    *frames = sp->frames;
+    *arc = sp->arc;
+    return sp->px;
+}
+
+void amiga_add_sprite(uint32_t lin, int fw, int h, int frames, uint8_t *px, int arc)
+{
+    if (!enabled) { free(px); return; }
+    Sprite *sp = find_sprite(lin);
+    if (sp) { free(sp->px); free(sp->sub); memset(sp, 0, sizeof *sp); }
+    else sp = new_sprite();
+    sp->lin = lin;
+    sp->fw = fw;
+    sp->h = h;
+    sp->frames = frames;
+    sp->px = px;
+    sp->arc = arc;
+    sp->entry = -1;
+    sp->hw = fw;
+    sp->hh = h;
+    sp->sub_arc = -1;
+    sp->used = ++use_clock;
 }
 
 /* ---- drawing ----------------------------------------------------------------------------- */
@@ -900,10 +965,12 @@ static void copy_rect(void)
         old->sub = NULL;
         old->sub_arc = -1;
     } else if (old) {
-        free(old->px);
-        free(old->sub);
-        old->px = old->sub = NULL;
-        old->lin = 0;
+        /* Any other copy into a sprite's memory: the sprite is checked
+         * against its DOS data when it is next drawn, and kept if the data
+         * is as loaded. (The map copies into the memory the plane's
+         * balloon, PLANE.ARC 17, was loaded into; ending the sprite there
+         * showed the balloon in EGA in later flights.) */
+        old->stale = 1;
     }
     if (src) {
         if (src->scene) { dst->pal = src->pal; dst->scene = 1; dst->arc = src->arc; dst->cycle = src->cycle; }
@@ -1007,6 +1074,15 @@ static void sprite(void)
     int frame = rb(R.ds, o + 0x12);
     Surface *dst = drawn_page();
     Sprite *sp = find_sprite(lin);
+    if (sp) sp->used = ++use_clock;
+    if (sp && sp->stale) {
+        sp->stale = 0;
+        if (data_sum(sp->lin, sp->data_len) != sp->data_sum) {     /* overwritten: the DOS data */
+            free(sp->px);
+            free(sp->sub);
+            sp->px = sp->sub = NULL;
+        }
+    }
     /* The money bag (MAIN.ARC 23) in the mountain and the jungle: the Amiga
      * game shows it with its pens moved to scene colours (seen in its
      * screens; the coin pile is drawn over it by the game). */
@@ -1234,8 +1310,21 @@ void amiga_render(uint32_t start_addr, uint32_t *pixels, int W, int H, int dark)
     /* one palette for the whole screen, as the Amiga game shows it */
     Surface *s = &pages[start_addr >= 0x2000];
     uint32_t lut[256];
+    /* The camera's flash (Amiga node 7 0xC32): for the first redraw after
+     * the shot, the photography palette (table entry 8) gives way to the
+     * flash palette (entry 9: the scene's colours 1-7 and 16-29 white).
+     * The DOS game lights the EGA border then (video_overscan); shown for
+     * two Amiga frames (40 ms). */
+    static int border, flashing;
+    static uint32_t flash_at;
+    int ov = video_overscan();
+    if (ov && !border) { flashing = 1; flash_at = SDL_GetTicks(); }
+    border = ov;
+    int pal = s->pal;
+    if (flashing && SDL_GetTicks() - flash_at < 40 && pal == 1 + 8 && npals > 1 + 9) pal = 1 + 9;
+    else flashing = 0;
     for (int c = 0; c < 256; c++)
-        lut[c] = dark ? 0xFF000000u : c < 32 ? pals[s->pal][c] : ega_argb(s->pal, c & 31);
+        lut[c] = dark ? 0xFF000000u : c < 32 ? pals[pal][c] : ega_argb(s->pal, c & 31);
     /* The climbing and jungle games show the nephew playing in his colour:
      * the DOS game sets EGA colour 5 (and 13) to it, the Amiga game colours
      * 17-20 (mountain node 0x23E, jungle node 0x14E4). */

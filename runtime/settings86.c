@@ -24,6 +24,12 @@ void settings_defaults(Settings *s)
     s->deadzone = 40;
     s->keyboard_mode = 0;
     s->jungle_order = 0;
+    s->fixed_random = 1;
+    s->speaker_filter = 0;
+    s->launchpad_stop = 1;
+    s->rival_collisions = 1;
+    s->log = 0;
+    s->ega_flash = 1;
     s->speech = 1;
     strcpy(s->gamedir, "files");
     strcpy(s->amiga_dir, "amiga");
@@ -50,6 +56,12 @@ void settings_clamp(Settings *s)
     s->deadzone = clampi(s->deadzone, 5, 90);
     s->keyboard_mode = s->keyboard_mode != 0;
     s->jungle_order = s->jungle_order != 0;
+    s->fixed_random = s->fixed_random != 0;
+    s->speaker_filter = s->speaker_filter != 0;
+    s->launchpad_stop = s->launchpad_stop != 0;
+    s->rival_collisions = s->rival_collisions != 0;
+    s->log = s->log != 0;
+    s->ega_flash = clampi(s->ega_flash, 0, 2);
 }
 
 const char *settings_path(void)
@@ -92,6 +104,12 @@ int settings_load(Settings *s, const char *path)
         else if (!strcmp(key, "deadzone")) s->deadzone = n;
         else if (!strcmp(key, "keyboard_mode")) s->keyboard_mode = n;
         else if (!strcmp(key, "jungle_order")) s->jungle_order = n;
+        else if (!strcmp(key, "fixed_random")) s->fixed_random = n;
+        else if (!strcmp(key, "speaker_filter")) s->speaker_filter = n;
+        else if (!strcmp(key, "launchpad_stop")) s->launchpad_stop = n;
+        else if (!strcmp(key, "rival_collisions")) s->rival_collisions = n;
+        else if (!strcmp(key, "log")) s->log = n;
+        else if (!strcmp(key, "ega_flash")) s->ega_flash = n;
         else if (!strcmp(key, "amiga_dir") && *val)
             snprintf(s->amiga_dir, sizeof s->amiga_dir, "%s", val);
         else if (!strcmp(key, "gamedir") && *val)
@@ -125,6 +143,18 @@ int settings_save(const Settings *s, const char *path)
     fprintf(f, "keyboard_mode = %d\n", s->keyboard_mode);
     fprintf(f, "# jungle_order: 1 = the nephews take turns in the Amiga order (green, blue, red)\n");
     fprintf(f, "jungle_order = %d\n", s->jungle_order);
+    fprintf(f, "# fixed_random: 0 = the original random numbers, 1 = no short repeating cycles\n");
+    fprintf(f, "fixed_random = %d\n", s->fixed_random);
+    fprintf(f, "# ega_flash: the photo flash in EGA: 0 = off, 1 = border (as on the PC), 2 = whole screen\n");
+    fprintf(f, "ega_flash = %d\n", s->ega_flash);
+    fprintf(f, "# log: 1 = write logs/ducktales_<date>_<time>.log (one per run, for crash reports)\n");
+    fprintf(f, "log = %d\n", s->log);
+    fprintf(f, "# rival_collisions: 1 = the rival's plane is hit by obstacles as the player's (and dodges them)\n");
+    fprintf(f, "rival_collisions = %d\n", s->rival_collisions);
+    fprintf(f, "# speaker_filter: 1 = the PC speaker sounds as a small speaker (little bass), 0 = clean\n");
+    fprintf(f, "speaker_filter = %d\n", s->speaker_filter);
+    fprintf(f, "# launchpad_stop: Amiga sound: 1 = the music stops before Launchpad's screen (Amiga), 0 = plays on (DOS)\n");
+    fprintf(f, "launchpad_stop = %d\n", s->launchpad_stop);
     fprintf(f, "gamedir = %s\n", s->gamedir);
     fprintf(f, "amiga_dir = %s\n", s->amiga_dir);
     fclose(f);

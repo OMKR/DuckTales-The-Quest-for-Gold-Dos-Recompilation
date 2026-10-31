@@ -314,8 +314,10 @@ static void bios_int10(void)
     case 0x0F: R.ax = (uint16_t)(0x2800 | video_get_mode()); R.bx = (uint16_t)((video_get_page() << 8) | LO(R.bx)); return;
     case 0x10:
         if (LO(R.ax) == 0x00) { video_ega_palette(LO(R.bx), HI(R.bx)); return; }
+        if (LO(R.ax) == 0x01) { video_ega_palette(0x11, HI(R.bx)); return; }
         if (LO(R.ax) == 0x02) {
             for (int i = 0; i < 16; i++) video_ega_palette(i, rb(R.es, R.dx + i));
+            video_ega_palette(0x11, rb(R.es, R.dx + 16));    /* the border */
             return;
         }
         return;
@@ -379,6 +381,17 @@ void dos_init(uint32_t psp, uint32_t prog_end)
         ww(0x40, 0x63, 0x3B4);
     }
     ww(0x40, 0x13, MEM_TOP / 64);
+    /* the BIOS tick count holds the time of day (18.2 ticks a second since
+     * midnight), as on a PC: the game seeds its random numbers from it
+     * (040E:0E01) when a game starts. Counted from 0, the seed was nearly
+     * the same in every session. Headless runs keep 0 (repeatable). */
+    if (!getenv("DT_HEADLESS")) {
+        time_t now = time(NULL);
+        struct tm *t = localtime(&now);
+        uint32_t ticks = t ? (uint32_t)((t->tm_hour * 3600 + t->tm_min * 60 + t->tm_sec) * 1193180.0 / 65536) : 0;
+        ww(0x40, 0x6C, (uint16_t)ticks);
+        ww(0x40, 0x6E, (uint16_t)(ticks >> 16));
+    }
     ww(0x40, 0x1A, 0x1E);              /* keyboard buffer head/tail */
     ww(0x40, 0x1C, 0x1E);
     /* environment: one variable, then the program path */

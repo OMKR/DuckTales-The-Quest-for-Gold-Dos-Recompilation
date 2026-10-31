@@ -34,6 +34,22 @@ sound effects and speech, taken from your own copy of the Amiga game.
 - The code wheel check (copy protection) can be switched off.
 - The jungle minigame can take the nephews in the Amiga order (green,
   blue, red) instead of the DOS order (red, blue, green).
+- Photography flash: the Amiga mode flashes the picture white as the Amiga
+  game does; in EGA the original lights the screen border, shown as a
+  frame, a whole-screen flash or off (setting "Photo flash (EGA)").
+- Rival plane: Glomgold's plane in the flying game is hit by the same
+  obstacles as yours (spinning and losing time) and dodges most of them;
+  "original" keeps it untouched as in the PC game.
+- Music at Launchpad (Amiga sound): stops before his screen as in the
+  Amiga game, or plays on as in the DOS game.
+- PC speaker sound: "original" imitates a PC's small built-in speaker with
+  a filter (thin, almost no bass); "clean" plays the sounds as the game
+  makes them, unfiltered.
+- Log file: one file per run in `logs/` (date and time in its name), for
+  crash reports.
+- Random numbers: "Fixed" (default) avoids the original generator's short
+  repeating sequences; "Original" works as the PC game. Both differ from
+  game to game.
 - Settings program: game folder selection, import of the Amiga disk images
   (`.adf`/`.ipf`), a one-click build, and adding the Amiga sound later.
 - Windows (x64; ARM64 through emulation), Linux (x86_64, aarch64) and macOS

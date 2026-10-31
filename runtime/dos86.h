@@ -24,6 +24,7 @@ void video_init(void);
 void video_set_mode(int mode);
 int video_get_mode(void);
 uint32_t video_ega_rgb(int colour);
+int video_overscan(void);          /* the EGA border colour (attribute 11h) */
 /* amiga86.c */
 void amiga_init(void);
 int amiga_driver(uint32_t drv_seg, uint32_t off);

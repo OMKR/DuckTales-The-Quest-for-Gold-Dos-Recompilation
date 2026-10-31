@@ -12,6 +12,8 @@
 #include "layout86.h"
 #include "dos86.h"
 #include "amigasnd.h"
+#include "log86.h"
+#include "rival86.h"
 
 CPU86 R;
 uint8_t *mem;
@@ -25,6 +27,8 @@ unsigned ftrace_pos;
 
 static struct { uint8_t *data; uint32_t size; uint32_t *relocs; uint32_t nrel; } ovl[MAX_OVL];
 static int cur_ovl;
+static int tick_scale;              /* tick rate % while a slowed animation runs, 0 = none */
+static int plane_main_flip = 1;     /* the plane's last page flip was its main loop's */
 static uint32_t image_paras;        /* paragraphs of the root image */
 
 void ftrace_dump(void)
@@ -38,6 +42,15 @@ void ftrace_dump(void)
     for (int i = 1; i <= 12 && i <= rs_top; i++)
         fprintf(stderr, " %04X:%04X", rs_stack[(rs_top - i) & 1023] >> 16, rs_stack[(rs_top - i) & 1023] & 0xFFFF);
     fprintf(stderr, "\n");
+}
+
+/* the game's state, for the log file on a crash (log86.c) */
+void crash_dump(void)
+{
+    fprintf(stderr, "  ax=%04X bx=%04X cx=%04X dx=%04X si=%04X di=%04X bp=%04X sp=%04X\n"
+            "  es=%04X cs=%04X ss=%04X ds=%04X overlay=%d\n", R.ax, R.bx, R.cx, R.dx, R.si, R.di,
+            R.bp, R.sp, R.es, R.cs, R.ss, R.ds, cur_ovl);
+    ftrace_dump();
 }
 
 void rt_fatal(const char *fmt, ...)
@@ -120,8 +133,15 @@ static void call_resolved(uint32_t seg, uint32_t off, int near_call)
     int d = driver_at(seg);
     if (d >= 0) {
         void (*fn)(void) = find_fn(d, 0, off);
+        /* the rival's collision test runs the game's own test, which may
+         * draw or play a sound: nothing reaches the drivers then */
+        if (fn && rival_probe) { pop16(); pop16(); return; }
         if (fn) {
             uint16_t saved = R.cs;
+            /* the plane's page flips (EGA driver 0E5h): from the main loop
+             * (overlay 4, 0C17:02A3) or from its crash and stunt loops */
+            if (d == DRIVER_BASE + 1 && off == 0xE5 && cur_ovl == 4)
+                plane_main_flip = rw(R.ss, R.sp) == 0x02A7;
             if (d == DRIVER_BASE + 1 && amiga_driver(seg, off)) return;
             /* the Tandy / speaker driver's sound request (far, number at SP+4) */
             if (((d == DRIVER_BASE + 4 && off == 0x415) || (d == DRIVER_BASE + 5 && off == 0x408)) && amigasnd_active())
@@ -210,6 +230,7 @@ int ovl_load(int n)
     int prev = cur_ovl;
     if (n == cur_ovl) return prev;
     if (n <= 0 || n >= MAX_OVL || !ovl[n].data) rt_fatal("bad overlay %d", n);
+    log_printf("overlay %d", n);
     /* the next scene starts when a voice has been spoken, as on the Amiga
      * (else the plane's engine and other scene sounds would wait behind it) */
     for (int k = 0; k < 20 * 60 && amigasnd_speaking(); k++) wait_frames(1);
@@ -223,17 +244,24 @@ int ovl_load(int n)
         mem[a + 1] = (uint8_t)(v >> 8);
     }
     cur_ovl = n;
+    tick_scale = 0;
     amigasnd_overlay(n);
     return prev;
 }
 
 /* Vertical retraces per frame, %: the climbing, cave and other minigames
  * draw a full screen per step and wait for the next retrace; on the PCs of
- * the time a step took two retraces (the plane's, a lighter screen, one). */
+ * the time a step took two retraces. The plane's main loop is paced by the
+ * game's ticks (6 per step) and keeps one; its crash and stunt loops (the
+ * spin, the whale's spout, ...) step on the retrace alone and ran at 60
+ * steps a second: two, as the other minigames. */
 int retrace_pct(void)
 {
     switch (cur_ovl) {
-    case 1: case 2: case 4: case 10: return 100;   /* menus, office, map, plane */
+    case 1: case 2: case 10: return 100;           /* menus, office, map */
+    case 4: return plane_main_flip ? 100 : 50;     /* the plane */
+    case 3: return 33;      /* the scales' beam (0C17:06D0-08E4): a screen copy,
+                             * two sprites and both sums a step, ~3 retraces */
     default: return 50;
     }
 }
@@ -244,7 +272,19 @@ int retrace_pct(void)
 /* menus (title, office, map, investments): not a minigame (overlays 3-9) */
 int menu_mode(void) { return cur_ovl < 3 || cur_ovl > 9; }
 
-int tick_pct(void) { return cur_ovl == 3 ? 40 : 100; }
+/* Animations that draw, then wait a number of ticks (040E:0DCC with 0,
+ * then n): on the PCs of the time the drawing took its own time before the
+ * wait (about 10 ms a full-screen copy: the opening dialogue then shows
+ * its pages as long as the Amiga version), here none, so they ran up to
+ * twice as fast. Their ticks are slowed to match: set by hooks86.c while
+ * such a loop runs (tick_scale), else per overlay: the scales (3) 40 %,
+ * the money bin (9) 90 %. */
+void tick_scale_set(int pct) { tick_scale = pct; }
+int tick_pct(void)
+{
+    if (tick_scale) return tick_scale;
+    return cur_ovl == 3 ? 40 : cur_ovl == 9 ? 90 : 100;
+}
 
 void ovl_restore(int n)
 {
@@ -358,6 +398,15 @@ int main(int argc, char **argv)
 {
     settings_defaults(&settings);
     settings_load(&settings, settings_path());
+    if (settings.log) {
+        log_open();
+        log_printf("settings: graphics %d, sound %d, speech %d, speed %d %%, fps %d, music %d %%, "
+                   "joystick %d, keyboard mode %d, jungle order %d, random %s, photo flash %d",
+                   settings.graphics, settings.sound, settings.speech, settings.speed, settings.fps,
+                   settings.music, settings.joystick, settings.keyboard_mode, settings.jungle_order,
+                   settings.fixed_random ? "fixed" : "original", settings.ega_flash);
+        log_printf("game folder: %s; Amiga folder: %s", argc > 1 ? argv[1] : settings.gamedir, settings.amiga_dir);
+    }
     gamedir = argc > 1 ? argv[1] : settings.gamedir;
     /* a relative game folder in the settings is relative to the program */
     static char gamedir_buf[1600];

@@ -28,6 +28,12 @@ typedef struct {
     int deadzone;           /* controller stick dead zone, % */
     int keyboard_mode;      /* arrows + Space/Ctrl drive the joystick */
     int jungle_order;       /* jungle nephews in the Amiga order (green first) */
+    int ega_flash;          /* photo flash in EGA: 0 off, 1 border (as the PC), 2 screen */
+    int log;                /* write logs/ducktales_<date>_<time>.log */
+    int rival_collisions;   /* the plane game's rival obeys the collision rules */
+    int launchpad_stop;     /* Amiga sound: the music stops before Launchpad (as the Amiga game) */
+    int speaker_filter;     /* PC speaker heard through a small cone (1) or clean (0) */
+    int fixed_random;       /* random numbers: no short repeating cycles */
     char gamedir[512];
     char amiga_dir[512];    /* Amiga game folder (DT1, DT2) */
 } Settings;

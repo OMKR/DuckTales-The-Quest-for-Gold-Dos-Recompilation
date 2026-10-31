@@ -50,15 +50,39 @@ RETURN_HOOKS = {
     (0, 0x40E0 + 0x0AFA): "hook_joystick_question",
     # joystick calibration (move to the corners and press fire)
     (0, 0x40E0 + 0x0B25): "hook_joystick_calibration",
-    # keyboard flush: keeps a key event that has only just arrived
+    # keyboard flush: skipped when a key press would go unseen (hooks86.c)
     (0, 0x40E0 + 0x19A5): "hook_keyboard_flush",
 }
+# the random seed is set (settings.fixed_random)
+HOOKS[(0, 0x40E0 + 0x0E0D)] = "hook_random_seed"
+# draw-then-wait animations: slower ticks while they run (hooks86.c)
+HOOKS[(0, 0x2F50 + 0x0168)] = "hook_slow_dialogue"
+HOOKS[(0, 0x2F50 + 0x0337)] = "hook_slow_end"
+HOOKS[(0, 0x2F50 + 0x0338)] = "hook_slow_dialogue"
+HOOKS[(0, 0x2F50 + 0x0541)] = "hook_slow_end"
+HOOKS[(0, 0x2F50 + 0x0AEB)] = "hook_slow_menu"
+HOOKS[(0, 0x2F50 + 0x0D88)] = "hook_slow_end"
+HOOKS[(0, 0x2F50 + 0x0D89)] = "hook_slow_pause"
+HOOKS[(0, 0x2F50 + 0x0DED)] = "hook_slow_end"
+HOOKS[(2, OVL_SEG * 16 + 0x02E4)] = "hook_slow_destination"
+HOOKS[(2, OVL_SEG * 16 + 0x06CF)] = "hook_slow_end"
+HOOKS[(6, OVL_SEG * 16 + 0x160D)] = "hook_slow_fall"
+HOOKS[(6, OVL_SEG * 16 + 0x1663)] = "hook_slow_end"
+# the map's destinations are placed (settings.fixed_random: all 150 maps)
+HOOKS[(0, 0x15A0 + 0x01F6)] = "hook_map_shuffle"
 HOOKS[(0, 0x40E0 + 0x199F)] = "hook_picture_loaded"
-# the key reader returns (the keyboard flush keeps only unread keys)
+# the plane game's rival under the collision rules (rival86.c)
+HOOKS[(4, OVL_SEG * 16 + 0x0F84)] = "hook_rival_step_begin"
+HOOKS[(4, OVL_SEG * 16 + 0x132B)] = "hook_rival_step_end"
+HOOKS[(4, OVL_SEG * 16 + 0x1139)] = "hook_rival_draw_before"
+HOOKS[(4, OVL_SEG * 16 + 0x113E)] = "hook_rival_draw_after"
+# the key reader returns: the keys have been looked at
 HOOKS[(0, 0x40E0 + 0x1A35)] = "hook_key_read"
 # Amiga sound voices (amigasnd.c): the plane has landed, the scales' result
 HOOKS[(4, OVL_SEG * 16 + 0x0F27)] = "hook_plane_landed"
 HOOKS[(3, OVL_SEG * 16 + 0x0A94)] = "hook_scales_result"
+# the campfire: a teleporter trip's sound plays to its end, the Amiga voice
+HOOKS[(0, 0x2BB0 + 0x013A)] = "hook_campfire"
 # jungle: the nephew who plays (settings.jungle_order)
 HOOKS[(8, OVL_SEG * 16 + 0x1301)] = "hook_jungle_nephew"
 HOOKS[(8, 0xE4C * 16 + 0x0236)] = "hook_jungle_hat_before"

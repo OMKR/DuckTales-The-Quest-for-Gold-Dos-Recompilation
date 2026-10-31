@@ -31,6 +31,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import time
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -78,25 +79,59 @@ def download(url, dest, sha256):
     tmp.replace(dest)
 
 
+def unpack(archive, folder, inner=""):
+    """Extracts archive (its subfolder inner) as folder. Extracted beside,
+    then renamed: an interrupted extraction leaves no folder that looks
+    finished."""
+    tmp = TC / (folder.name + ".tmp")
+    shutil.rmtree(tmp, ignore_errors=True)
+    if archive.suffix in (".zip", ".whl"):
+        with zipfile.ZipFile(archive) as z:
+            z.extractall(tmp)
+    else:
+        with tarfile.open(archive) as t:
+            t.extractall(tmp)
+    archive.unlink()
+    src = tmp / inner if inner else tmp
+    # antivirus software scanning the new files can hold the rename for a
+    # while: retry, then copy
+    for attempt in range(10):
+        try:
+            src.replace(folder)
+            break
+        except OSError:
+            time.sleep(1)
+    else:
+        shutil.copytree(src, folder)
+    shutil.rmtree(tmp, ignore_errors=True)
+
+
+def zig_works(exe):
+    try:
+        return subprocess.run([str(exe), "version"], capture_output=True).returncode == 0
+    except OSError:          # e.g. WinError 193: a half-written zig.exe
+        return False
+
+
 def get_zig(osname, arch):
     key = f"{arch}-{osname}"
     folder = TC / f"zig-{key}-{ZIG_VERSION}"
     exe = folder / ("zig.exe" if osname == "windows" else "zig")
-    if exe.exists():
+    if exe.exists() and zig_works(exe):
         return exe
+    # missing, or left broken by an interrupted extraction (or removed by
+    # antivirus software): fetch it again
+    shutil.rmtree(folder, ignore_errors=True)
     ext = "zip" if osname == "windows" else "tar.xz"
     archive = TC / f"zig.{ext}"
     download(f"https://ziglang.org/download/{ZIG_VERSION}/zig-{key}-{ZIG_VERSION}.{ext}", archive, ZIG[key])
     print("Extracting Zig...", flush=True)
-    if ext == "zip":
-        with zipfile.ZipFile(archive) as z:
-            z.extractall(TC)
-    else:
-        with tarfile.open(archive) as t:
-            t.extractall(TC)
-    archive.unlink()
+    unpack(archive, folder, folder.name)
     if osname != "windows":
         exe.chmod(0o755)
+    if not zig_works(exe):
+        die(f"the C compiler {exe} does not run. Antivirus software may have "
+            "blocked or removed it: allow the toolchain folder and run the installer again.")
     return exe
 
 
@@ -109,11 +144,23 @@ def wheel_tag_ok(name, osname, arch):
     return "manylinux" in name and arch in name
 
 
+def capstone_works(pylib):
+    test = ("import sys; sys.path.insert(0, sys.argv[1]); import capstone; "
+            "capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_16)")
+    try:
+        return subprocess.run([sys.executable, "-c", test, str(pylib)],
+                              capture_output=True).returncode == 0
+    except OSError:
+        return False
+
+
 def get_capstone(osname, arch):
     """Unpack the Capstone wheel for this platform into toolchain/pylib."""
     pylib = TC / "pylib"
-    if (pylib / "capstone").exists():
+    if (pylib / "capstone").exists() and capstone_works(pylib):
         return pylib
+    # missing, or broken (an interrupted extraction): fetch it again
+    shutil.rmtree(pylib, ignore_errors=True)
     with urllib.request.urlopen(f"https://pypi.org/pypi/capstone/{CAPSTONE_VERSION}/json") as r:
         meta = json.load(r)
     # Windows on ARM runs the x64 Python/wheel under emulation
@@ -125,9 +172,10 @@ def get_capstone(osname, arch):
     f = files[0]
     wheel = TC / f["filename"]
     download(f["url"], wheel, f["digests"]["sha256"])
-    with zipfile.ZipFile(wheel) as z:
-        z.extractall(pylib)
-    wheel.unlink()
+    unpack(wheel, pylib)
+    if not capstone_works(pylib):
+        die(f"Capstone in {pylib} does not load. Antivirus software may have "
+            "blocked or removed it: allow the toolchain folder and run the installer again.")
     return pylib
 
 

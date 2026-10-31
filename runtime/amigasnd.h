@@ -22,14 +22,17 @@ void amigasnd_voices_only(int on);
 int amigasnd_music(void);
 /* voices on/off (settings: speech) */
 void amigasnd_set_speech(int on);
+void amigasnd_set_launchpad_stop(int on);   /* the music stops for Launchpad (1) or plays on */
 /* a voice is being spoken (the Amiga game waits for it before going on) */
 int amigasnd_speaking(void);
+/* sound n still plays (its channel runs its program, and is heard) */
+int amigasnd_playing(int n);
 /* Voices (the Amiga version speaks; the DOS game shows the same scenes):
  * a text the game draws, a picture it loads, or one of these events. */
 void amigasnd_speech(const int *sets, int n);
 void amigasnd_text(const char *text);
 void amigasnd_picture(const char *file, int entry);
-enum { AMIGASND_LANDED, AMIGASND_SCALES_WON, AMIGASND_SCALES_LOST };
+enum { AMIGASND_LANDED, AMIGASND_SCALES_WON, AMIGASND_SCALES_LOST, AMIGASND_CAMPFIRE };
 void amigasnd_event(int event);
 /* Adds n mono samples at `rate` Hz to buf; the engine ticks at 50 Hz scaled
  * by music_pct. */

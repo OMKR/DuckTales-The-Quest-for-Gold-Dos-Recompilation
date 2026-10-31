@@ -3,6 +3,7 @@
 #define SDL_MAIN_HANDLED
 #include <SDL.h>
 #include <string.h>
+#include <math.h>
 
 #include "cpu86.h"
 #include "dos86.h"
@@ -363,31 +364,48 @@ static void pump_events(void)
     }
 }
 
-/* time of the last scancode given to the game, in ms (headless: from the
- * frame count) */
-static uint32_t key_time = 0x80000000u;
-/* key presses given to the game, and their count when its key reader
- * (040E:19C5) last returned a key */
-static uint32_t makes_given, makes_read;
-
-int keyboard_recent(uint32_t ms)
+/* per scancode: down (as given to the game), and pressed since the game's
+ * key reader (040E:19C5) last looked at the keys */
+static uint8_t key_down[128], key_unseen[128];
+/* since the last flush the key reader has found a new press: the game is
+ * acting on it (the cave moves), and keys pressed meanwhile are flushed,
+ * as on the PC */
+static int read_new;
+static int keyboard_unseen_any(void)
 {
-    uint32_t now = headless ? frame_counter * 1000u / 60 : SDL_GetTicks();
-    return now - key_time < ms;
+    for (int i = 0; i < 128; i++) if (key_unseen[i]) return 1;
+    return 0;
 }
-
-int keyboard_unread(void) { return makes_given != makes_read; }
-void keyboard_read(void) { makes_read = makes_given; }
+/* a key pressed that a flush should leave (BIOS keys: no key table) */
+int keyboard_keep_pending(void) { return keyboard_unseen_any() && !read_new; }
+void keyboard_seen(void)
+{
+    if (keyboard_unseen_any()) read_new = 1;
+    memset(key_unseen, 0, sizeof key_unseen);
+}
+void keyboard_flushed(void) { memset(key_unseen, 0, sizeof key_unseen); read_new = 0; }
+/* what a keyboard flush should leave of a key in the game's key table:
+ * 0 (flush it), 0x80 (held) or 0x40 (released, not yet read). Kept: a key
+ * pressed that the game has not looked at yet, while the game is waiting
+ * for one (its last look found no new press), and a key held down long
+ * enough to repeat (typematic, after 500 ms). */
+int keyboard_flush_keep(int sc)
+{
+    if (sc < 0 || sc >= 128) return 0;
+    if (key_unseen[sc] && !read_new) return key_down[sc] ? 0x80 : 0x40;
+    if (sc == rep_xt && rep_sent > 0 && key_down[sc]) return 0x80;
+    return 0;
+}
 
 /* one scancode per call: latch it in port 60h and raise IRQ1 */
 static void deliver_keyboard(void)
 {
     if (scan_head == scan_tail || !R.ifl) return;
-    key_time = headless ? frame_counter * 1000u / 60 : SDL_GetTicks();
     cur_scan = scan_queue[scan_head];
     cur_ascii = ascii_queue[scan_head];
     scan_head = (scan_head + 1) % 64;
-    if (!(cur_scan & 0x80)) makes_given++;
+    key_down[cur_scan & 0x7F] = !(cur_scan & 0x80);
+    if (!(cur_scan & 0x80)) key_unseen[cur_scan & 0x7F] = 1;
     raise_irq(9);
 }
 
@@ -422,6 +440,49 @@ static void frame(void)
 #define TANDY_CLOCK 3579545.0
 static SDL_AudioDeviceID audio_dev;
 static double spk_phase, spk_carry, spk_dc;
+
+/* The PC speaker as heard (settings.speaker_filter): a 2-inch cone in the
+ * case gives next to no bass and little treble, with a resonance in the
+ * middle. The square wave from the timer goes through a high-pass at
+ * 350 Hz, a peak of +5 dB at 2.5 kHz and a low-pass at 5.5 kHz (RBJ
+ * biquads). Clean (default): the square wave as it is. */
+typedef struct { double b0, b1, b2, a1, a2, x1, x2, y1, y2; } Biquad;
+static Biquad spk_eq[3];
+
+static void biquad_set(Biquad *q, int type, double f, double qv, double db)
+{
+    double w = 2 * M_PI * f / AUDIO_RATE, c = cos(w), al = sin(w) / (2 * qv), A = pow(10, db / 40);
+    double b0, b1, b2, a0, a1, a2;
+    if (type == 0) {                 /* high-pass */
+        b0 = (1 + c) / 2; b1 = -(1 + c); b2 = (1 + c) / 2; a0 = 1 + al; a1 = -2 * c; a2 = 1 - al;
+    } else if (type == 1) {          /* low-pass */
+        b0 = (1 - c) / 2; b1 = 1 - c; b2 = (1 - c) / 2; a0 = 1 + al; a1 = -2 * c; a2 = 1 - al;
+    } else {                         /* peak */
+        b0 = 1 + al * A; b1 = -2 * c; b2 = 1 - al * A; a0 = 1 + al / A; a1 = -2 * c; a2 = 1 - al / A;
+    }
+    *q = (Biquad){b0 / a0, b1 / a0, b2 / a0, a1 / a0, a2 / a0, 0, 0, 0, 0};
+}
+
+static double biquad(Biquad *q, double x)
+{
+    double y = q->b0 * x + q->b1 * q->x1 + q->b2 * q->x2 - q->a1 * q->y1 - q->a2 * q->y2;
+    q->x2 = q->x1; q->x1 = x; q->y2 = q->y1; q->y1 = y;
+    return y;
+}
+
+static double speaker_out(double v)
+{
+    static int ready;
+    if (!settings.speaker_filter) return v;
+    if (!ready) {
+        biquad_set(&spk_eq[0], 0, 350, 0.707, 0);
+        biquad_set(&spk_eq[1], 2, 2500, 1.0, 5);
+        biquad_set(&spk_eq[2], 1, 5500, 0.707, 0);
+        ready = 1;
+    }
+    for (int k = 0; k < 3; k++) v = biquad(&spk_eq[k], v);
+    return v * 1.2;                  /* about the loudness of the clean sound */
+}
 
 static struct {
     uint16_t period[3];       /* 10-bit tone dividers */
@@ -510,7 +571,7 @@ static void sound_tick(void)
             spk_phase -= (int)spk_phase;
             v = spk_phase < 0.5 ? 0.5 : -0.5;
         } else if (level) v = 0.5;
-        v += tandy_sample();
+        v = speaker_out(v) + tandy_sample();
         spk_dc += (v - spk_dc) * 0.002;   /* DC blocker */
         double o = (v - spk_dc) * gain + voice[i] * settings.volume / 150.0;
         buf[i] = (int16_t)(o > 32767 ? 32767 : o < -32768 ? -32768 : o);
@@ -523,6 +584,7 @@ static void audio_init(void)
 {
     if (getenv("DT_WAV")) wav_out = fopen(getenv("DT_WAV"), "wb");
     amigasnd_set_speech(settings.speech);
+    amigasnd_set_launchpad_stop(settings.launchpad_stop);
     if (settings.sound == SOUND_AMIGA && !amigasnd_init(settings.amiga_dir))
         settings.sound = SOUND_TANDY;
     /* the Amiga voices with the DOS sound too (needs the Amiga game) */

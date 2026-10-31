@@ -24,11 +24,12 @@
 #include "font8x8_ext_latin.h"
 
 #define W 720
-#define H 660          /* menu rows end ~576; edit box and help line below */
+#define H 800          /* menu rows end ~696; edit box and the help lines below */
 #define CHAR 16        /* 8x8 font drawn at 2x */
 #define LINE 20
 #define TOP 60
 #define LEFT 40
+#define HELP_LINES 3   /* lines of help text below the menu */
 
 #ifdef _WIN32
 #define GAME_EXE "ducktales_dos.exe"
@@ -44,13 +45,13 @@ static char dir_edit[512];
 static int status_ok;           /* status line shown in green */
 
 enum {
-    I_SPEED, I_FPS, I_MUSIC, I_GFX, I_SOUND, I_SPEECH, I_VOLUME, I_FULL, I_SCALE, I_JOY, I_DEAD, I_PAD, I_ORDER, I_PROT, I_DIR, I_ADIR, I_IMPORT,
+    I_SPEED, I_FPS, I_MUSIC, I_GFX, I_SOUND, I_SPEECH, I_LPAD, I_SPKF, I_VOLUME, I_FULL, I_SCALE, I_JOY, I_DEAD, I_PAD, I_ORDER, I_RANDOM, I_FLASH, I_LOG, I_RIVAL, I_PROT, I_DIR, I_ADIR, I_IMPORT,
     I_BUILD, I_ABUILD, I_DEFAULTS, I_START, I_SAVE, I_QUIT, I_COUNT
 };
 
 static const char *const labels[I_COUNT] = {
-    "Game speed", "Frame rate limit (fps)", "Music speed", "Graphics", "Sound", "Amiga speech", "Volume", "Fullscreen", "Window size", "Controls",
-    "Controller dead zone", "Keyboard mode", "Jungle nephew order", "Copy protection",
+    "Game speed", "Frame rate limit (fps)", "Music speed", "Graphics", "Sound", "Amiga speech", "Music at Launchpad", "PC speaker sound", "Volume", "Fullscreen", "Window size", "Controls",
+    "Controller dead zone", "Keyboard mode", "Jungle nephew order", "Random numbers", "Photo flash (EGA)", "Log file", "Rival plane", "Copy protection",
     "Game folder", "Amiga game folder", "Import Amiga disk image (.adf/.ipf)",
     "Build game from game files", "Add Amiga sound",
     "Restore defaults", "Save and start game", "Save and quit", "Quit without saving",
@@ -104,6 +105,32 @@ static void draw_text_px(int x, int y, const char *s, SDL_Color c, int px)
 static void draw_text(int x, int y, const char *s, SDL_Color c)
 {
     draw_text_px(x, y, s, c, 2);
+}
+
+/* the help below the menu: small text, broken at spaces into up to
+ * HELP_LINES lines of width w */
+static void draw_wrapped(int x, int y, int w, const char *s, SDL_Color c)
+{
+    int per = w / 8;
+    for (int line = 0; line < HELP_LINES && *s; line++) {
+        const char *p = s, *cut = NULL;
+        int n = 0;
+        while (*p && n < per) {
+            const char *q = p;
+            next_cp(&q);
+            if (*p == ' ') cut = p;
+            p = q;
+            n++;
+        }
+        if (!*p || !cut) cut = p;
+        char buf[256];
+        size_t len = (size_t)(cut - s) < sizeof buf - 1 ? (size_t)(cut - s) : sizeof buf - 1;
+        memcpy(buf, s, len);
+        buf[len] = 0;
+        draw_text_px(x, y + line * 11, buf, c, 1);
+        s = cut;
+        while (*s == ' ') s++;
+    }
 }
 
 /* ---- settings ---------------------------------------------------------------------- */
@@ -176,6 +203,12 @@ static void value_text(int item, char *out, size_t n)
     case I_DEAD: snprintf(out, n, "< %d %% >", cfg.deadzone); break;
     case I_PAD: snprintf(out, n, "< %s >", cfg.keyboard_mode ? "joystick" : "keyboard"); break;
     case I_ORDER: snprintf(out, n, "< %s >", cfg.jungle_order ? "Amiga" : "DOS"); break;
+    case I_RANDOM: snprintf(out, n, "< %s >", cfg.fixed_random ? "Fixed" : "Original"); break;
+    case I_FLASH: snprintf(out, n, "< %s >", cfg.ega_flash == 0 ? "off" : cfg.ega_flash == 1 ? "border" : "screen"); break;
+    case I_LOG: snprintf(out, n, "< %s >", cfg.log ? "on" : "off"); break;
+    case I_SPKF: snprintf(out, n, "< %s >", cfg.speaker_filter ? "original" : "clean"); break;
+    case I_LPAD: snprintf(out, n, "< %s >", cfg.launchpad_stop ? "stops (Amiga)" : "plays on (DOS)"); break;
+    case I_RIVAL: snprintf(out, n, "< %s >", cfg.rival_collisions ? "collides" : "original"); break;
     default: break;
     }
 }
@@ -183,30 +216,67 @@ static void value_text(int item, char *out, size_t n)
 static const char *help_text(int item)
 {
     switch (item) {
-    case I_SPEED: return "100 % = original game speed; Shift + arrow: step 1";
-    case I_FPS: return "screen updates per second (60 = original EGA); Shift + arrow: step 1";
-    case I_MUSIC: return "100 % = original tempo, independent of game speed";
-    case I_GFX: return cfg.graphics == GFX_AMIGA ? "the Amiga version's pictures (set the Amiga game folder)"
-                                                : "the graphics card the game sees; Amiga = best picture";
-    case I_SOUND: return "Tandy = 3 voices + noise (best), PC speaker = 1 voice";
-    case I_SPEECH: return "the Amiga version's voices (any sound; needs the Amiga game + sound)";
-    case I_VOLUME: return "Shift + arrow: step 1";
-    case I_SCALE: return "window size in pixels (the game screen is 320x200)";
-    case I_PROT: return "off = skip the code wheel check (security system)";
-    case I_ADIR: return editing_dir ? "type the path, Enter = done, Esc = cancel"
-                                    : "folder with DT1 and DT2 of the Amiga version (Amiga port's files)";
-    case I_JOY: return "joystick = game controller as the PC joystick (no question at start)";
-    case I_DEAD: return "how far the stick must tilt before it moves";
-    case I_PAD: return "joystick = arrows move the joystick, Space/Ctrl = fire";
-    case I_ORDER: return "who plays first in the jungle: DOS = red, blue, green; Amiga = green, blue, red";
-    case I_IMPORT: return editing_dir == 3 ? "type the image path, Enter = extract, Esc = cancel"
-                                           : "into the Amiga game folder: Enter = type a path, or drop .adf/.ipf files";
-    case I_DIR: return editing_dir ? "type the path, Enter = done, Esc = cancel"
-                                   : "Enter = edit, or drop the game folder on this window";
-    case I_BUILD: return game_built() ? "built - rebuild after changing the game folder"
-                                      : "needed once: converts the game into " GAME_EXE;
-    case I_ABUILD: return amiga_sound_built() ? "built in - rebuild after changing the Amiga game folder"
-                                              : "adds the Amiga option of Sound (needs the Amiga game folder)";
+    case I_SPEED: return "How fast the game runs. 100 % is the speed of the original PC game; lower is "
+                         "slower and easier. Left/right: steps of 5, with Shift steps of 1. Also PgUp/PgDn "
+                         "during play (not saved).";
+    case I_FPS: return "How many times a second the screen is updated (60 = an EGA monitor). Lower it "
+                       "only if the game stutters. Shift + arrow: steps of 1. Alt + PgUp/PgDn during play.";
+    case I_MUSIC: return "Tempo of the music and sound effects. 100 % is the original tempo; it does not "
+                         "depend on the game speed. Ctrl + PgUp/PgDn during play.";
+    case I_GFX: return cfg.graphics == GFX_AMIGA
+                       ? "Amiga 32 colours: the Amiga version's pictures and colours, read from your Amiga "
+                         "game (set the Amiga game folder). Other choices: EGA, CGA, Tandy as on the PC."
+                       : "The graphics card the game draws for: EGA 16 colours (the PC's best), CGA 4 "
+                         "colours, Tandy 16 colours, or Amiga 32 colours (needs the Amiga game folder).";
+    case I_SOUND: return "Off; PC speaker (one beeping voice); Tandy (3 voices and noise, the PC's best); "
+                         "or Amiga: the Amiga version's own music, effects and speech (needs Add Amiga sound).";
+    case I_SPEECH: return "The Amiga version's voices (Launchpad, the nephews, the treasure, ...). Works with "
+                          "any sound setting, but needs the Amiga game folder and Add Amiga sound.";
+    case I_LPAD: return "With Sound = Amiga. Stops: the music ends before Launchpad greets you, as in the "
+                        "Amiga game. Plays on: it goes on under his screen, as in the DOS game.";
+    case I_SPKF: return "With Sound = PC speaker. Original: a filter imitates the small speaker inside a PC "
+                        "(thin, almost no bass). Clean: the sounds as the game makes them, unfiltered.";
+    case I_VOLUME: return "Loudness of all sound. Shift + arrow: steps of 1.";
+    case I_FULL: return "On: the game fills the whole screen. F11 switches during play.";
+    case I_SCALE: return "Size of the game window: the 320x200 game screen is enlarged this many times. "
+                         "Not used in fullscreen.";
+    case I_JOY: return "Joystick: a game controller (or keyboard mode) works as the PC joystick, and the "
+                       "game does not ask about it at the start. Keyboard: arrow keys and Space as in the manual.";
+    case I_DEAD: return "How far the controller's stick must be tilted before the game sees a move. "
+                        "Raise it if the plane or the climber drifts by itself.";
+    case I_PAD: return "Joystick: with Controls = joystick, the arrow keys move the joystick and "
+                       "Space/Ctrl fire. Keyboard: the keys work as normal keys.";
+    case I_ORDER: return "Who takes the first turn in the jungle: DOS = red, blue, green (as the PC game); "
+                         "Amiga = green, blue, red (as the Amiga game). The hats follow.";
+    case I_RANDOM: return "Original: random numbers as the PC game. Fixed: no short repeating "
+                          "sequences, and every map layout can come (150, not 60).";
+    case I_FLASH: return "The camera flash in the photo game, EGA only: border = the screen's edge lights "
+                         "up as on a real EGA monitor; screen = the whole picture flashes; off.";
+    case I_LOG: return "On: each run writes a log file in the logs folder (date and time in its name), with "
+                       "the details of a crash. Send it with a bug report.";
+    case I_RIVAL: return "Collides: Glomgold's plane in the flying game is hit by the same obstacles as "
+                         "yours (it spins and loses time) and dodges most. Original: nothing hits it.";
+    case I_PROT: return "On: the game asks for a code from the code wheel at the start, as the original. "
+                        "Off: the question is skipped.";
+    case I_DIR: return editing_dir ? "Type the path, Enter = done, Esc = cancel."
+                                   : "Folder of your DOS game (DUCKTALE.EXE, IT.DRV, *.ARC). Green = found. "
+                                     "Enter = type a path, or drop the folder on this window.";
+    case I_ADIR: return editing_dir ? "Type the path, Enter = done, Esc = cancel."
+                                    : "Folder of your Amiga game, with its DT1 and DT2 disks (for the Amiga "
+                                      "graphics, sound and speech). Enter = type a path, or drop it here.";
+    case I_IMPORT: return editing_dir == 3 ? "Type the image path, Enter = extract, Esc = cancel."
+                                           : "Extracts the Amiga game's two disk images (.adf or .ipf) into "
+                                             "the Amiga game folder. Enter = type a path, or drop the files here.";
+    case I_BUILD: return game_built() ? "Built. Run it again after changing the game folder or getting a new "
+                                        "version of this program."
+                                      : "Needed once: converts your DOS game into " GAME_EXE " (a few minutes).";
+    case I_ABUILD: return amiga_sound_built() ? "Built in. Run it again after changing the Amiga game folder."
+                                              : "Builds the Amiga version's sound engine into the game: adds "
+                                                "Sound = Amiga and the speech (needs the Amiga game folder).";
+    case I_DEFAULTS: return "Sets every setting back to its default; the game folders are kept. Saved when you save.";
+    case I_START: return "Saves the settings and starts the game.";
+    case I_SAVE: return "Saves the settings and closes this window.";
+    case I_QUIT: return "Closes this window; changes are lost.";
     default: return "";
     }
 }
@@ -235,6 +305,12 @@ static void change(int item, int dir, int big)
     case I_DEAD: cfg.deadzone += dir * step; break;
     case I_PAD: cfg.keyboard_mode = !cfg.keyboard_mode; break;
     case I_ORDER: cfg.jungle_order = !cfg.jungle_order; break;
+    case I_RANDOM: cfg.fixed_random = !cfg.fixed_random; break;
+    case I_FLASH: cfg.ega_flash = (cfg.ega_flash + 3 + dir) % 3; break;
+    case I_LOG: cfg.log = !cfg.log; break;
+    case I_SPKF: cfg.speaker_filter = !cfg.speaker_filter; break;
+    case I_LPAD: cfg.launchpad_stop = !cfg.launchpad_stop; break;
+    case I_RIVAL: cfg.rival_collisions = !cfg.rival_collisions; break;
     default: return;
     }
     settings_clamp(&cfg);
@@ -379,7 +455,7 @@ static int is_image(const char *path)
 static int activate(int item)
 {
     switch (item) {
-    case I_GFX: case I_SOUND: case I_SPEECH: case I_FULL: case I_PROT: case I_JOY: case I_PAD: case I_ORDER:
+    case I_GFX: case I_SOUND: case I_SPEECH: case I_FULL: case I_PROT: case I_JOY: case I_PAD: case I_ORDER: case I_RANDOM: case I_FLASH: case I_LOG: case I_RIVAL: case I_SPKF: case I_LPAD:
         change(item, 1, 0);
         return 1;
     case I_DIR:
@@ -398,10 +474,16 @@ static int activate(int item)
         snprintf(dir_edit, sizeof dir_edit, "%s", cfg.amiga_dir);
         SDL_StartTextInput();
         return 1;
-    case I_DEFAULTS:
+    case I_DEFAULTS: {           /* the folders stay */
+        char dir[sizeof cfg.gamedir], adir[sizeof cfg.amiga_dir];
+        memcpy(dir, cfg.gamedir, sizeof dir);
+        memcpy(adir, cfg.amiga_dir, sizeof adir);
         settings_defaults(&cfg);
+        memcpy(cfg.gamedir, dir, sizeof dir);
+        memcpy(cfg.amiga_dir, adir, sizeof adir);
         status[0] = 0;
         return 1;
+    }
     case I_BUILD: case I_ABUILD:
         if (!settings_save(&cfg, settings_path())) {
             snprintf(status, sizeof status, "Saving failed!");
@@ -480,7 +562,7 @@ static void draw(int sel)
     /* the path being typed: a box of its own below the menu */
     if (editing_dir) {
         static const char *const what[4] = {"", "Game folder:", "Amiga game folder:", "Disk image file:"};
-        int by = H - 74, bw = W - 2 * LEFT + 20;
+        int by = H - HELP_LINES * 11 - 46, bw = W - 2 * LEFT + 20;
         SDL_Rect box = {LEFT - 10, by, bw, 26};
         SDL_SetRenderDrawColor(ren, 8, 12, 32, 255);
         SDL_RenderFillRect(ren, &box);
@@ -495,7 +577,8 @@ static void draw(int sel)
         draw_text(LEFT - 2, by + 5, shown, white);
     }
     const char *help = status[0] ? status : help_text(sel);
-    draw_text_px(LEFT - 10, H - 30, help, status[0] ? (status_ok ? green : red) : grey, 1);
+    draw_wrapped(LEFT - 10, H - HELP_LINES * 11 - 6, W - 2 * LEFT + 20, help,
+                 status[0] ? (status_ok ? green : red) : grey);
     SDL_RenderPresent(ren);
 }
 
@@ -525,9 +608,18 @@ int main(int argc, char **argv)
     settings_load(&cfg, settings_path());
 
     SDL_EventState(SDL_DROPFILE, SDL_ENABLE);
+    /* the window: 1.5 times the layout, smaller if the screen (less the
+     * taskbar and the title bar) has no room for it */
+    int ww = W * 3 / 2, wh = H * 3 / 2;
+    SDL_Rect usable;
+    if (SDL_GetDisplayUsableBounds(0, &usable) == 0 && usable.h > 0) {
+        int maxh = usable.h - 60, maxw = usable.w - 40;
+        if (wh > maxh) { ww = ww * maxh / wh; wh = maxh; }
+        if (ww > maxw) { wh = wh * maxw / ww; ww = maxw; }
+        if (wh < H / 2) { ww = W / 2; wh = H / 2; }
+    }
     SDL_Window *win = SDL_CreateWindow("DuckTales (DOS) Settings", SDL_WINDOWPOS_CENTERED,
-                                       SDL_WINDOWPOS_CENTERED, W * 3 / 2, H * 3 / 2,
-                                       SDL_WINDOW_RESIZABLE);
+                                       SDL_WINDOWPOS_CENTERED, ww, wh, SDL_WINDOW_RESIZABLE);
     ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_PRESENTVSYNC);
     SDL_RenderSetLogicalSize(ren, W, H);
     SDL_GameController *pad = NULL;
@@ -610,8 +702,9 @@ int main(int argc, char **argv)
         draw(sel);
         /* DT_SHOT=file.bmp: save a frame and exit (for testing) */
         if (getenv("DT_SHOT")) {
-            SDL_Surface *s = SDL_CreateRGBSurfaceWithFormat(0, W * 3 / 2, H * 3 / 2, 32,
-                                                            SDL_PIXELFORMAT_ARGB8888);
+            int ow, oh;
+            SDL_GetRendererOutputSize(ren, &ow, &oh);
+            SDL_Surface *s = SDL_CreateRGBSurfaceWithFormat(0, ow, oh, 32, SDL_PIXELFORMAT_ARGB8888);
             SDL_RenderReadPixels(ren, NULL, SDL_PIXELFORMAT_ARGB8888, s->pixels, s->pitch);
             SDL_SaveBMP(s, getenv("DT_SHOT"));
             SDL_FreeSurface(s);

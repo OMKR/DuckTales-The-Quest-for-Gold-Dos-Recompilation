@@ -15,6 +15,12 @@ static uint32_t sw_cond, cw = 0x037F;
 static void push(double v) { top = (top - 1) & 7; st[top] = v; }
 static double pop(void) { double v = st[top]; top = (top + 1) & 7; return v; }
 
+/* the whole state, kept around a call made by the runtime (rival86.c) */
+typedef struct { double st[8]; int top; uint32_t sw_cond, cw; } FpuState;
+static FpuState saved_state;
+void fpu_save(void) { memcpy(saved_state.st, st, sizeof st); saved_state.top = top; saved_state.sw_cond = sw_cond; saved_state.cw = cw; }
+void fpu_restore(void) { memcpy(st, saved_state.st, sizeof st); top = saved_state.top; sw_cond = saved_state.sw_cond; cw = saved_state.cw; }
+
 uint32_t fpu_status(void)
 {
     return sw_cond | ((uint32_t)top << 11);

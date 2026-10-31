@@ -8,10 +8,13 @@
 #include "dos86.h"
 
 #include "amigasnd.h"
+#include "rival86.h"
 
-int keyboard_recent(uint32_t ms);   /* chips86.c */
-int keyboard_unread(void);
-void keyboard_read(void);
+int keyboard_keep_pending(void);   /* chips86.c */
+int keyboard_flush_keep(int sc);
+void keyboard_seen(void);
+void keyboard_flushed(void);
+
 
 /* Overlay 8 (jungle), 0C17:1301: AX = 4 - turn counter (DS:5CFC) picks
  * the nephew who plays (3 red, 2 blue, 1 green; his EGA colours). The
@@ -52,6 +55,37 @@ void hook_scales_result(void)
     amigasnd_event(player > rival ? AMIGASND_SCALES_WON : AMIGASND_SCALES_LOST);
     /* the Amiga game shows the result when the voice has been spoken */
     for (int k = 0; k < 20 * 60 && amigasnd_speaking(); k++) wait_frames(1);
+}
+
+/* the sound driver's "still playing" (far pointer DS:2028; the game waits
+ * on it after the teleporter's failure sound, root 056B) */
+static int driver_playing(void)
+{
+    CPU86 saved = R;
+    uint16_t off = (uint16_t)rw(R.ds, 0x2028), seg = (uint16_t)rw(R.ds, 0x202A);
+    push16(R.cs);
+    push16(0xFFFF);
+    RS_PUSH(R.cs, 0xFFFF);
+    dispatch_far(seg, off);
+    RS_POP();
+    int playing = R.ax != 0;
+    R = saved;
+    return playing;
+}
+
+/* 02BB:013A, the campfire's picture is up (before every destination's
+ * game). After a teleporter trip (DS:7900) the teleporter's sound (0x54,
+ * root 04BF) was cut off here after a tenth of a second by the stop at
+ * 0141 (the picture loads at once here, from a floppy it took seconds);
+ * the Amiga game waits for its channel before its stop (node 0 0x386).
+ * It plays to its end now (3.6 s on the Amiga, 2.4 s with Tandy), over
+ * the campfire's picture. Then the Amiga voice. */
+void hook_campfire(void)
+{
+    if (rb(R.ds, 0x7900))
+        for (int k = 0; k < 30 * 60 && (amigasnd_music() ? amigasnd_playing(0x54) : driver_playing()); k++)
+            wait_frames(1);
+    amigasnd_event(AMIGASND_CAMPFIRE);
 }
 
 /* 040E:0909, after the hardware detection: DS:204B selects the sound
@@ -102,11 +136,112 @@ int hook_joystick_calibration(void)
     return 1;
 }
 
-/* 040E:1A35, exit of the key reader 040E:19C5: AX = the key, 0 = none */
+/* 040E:19A5 (far): flushes the keyboard (the BIOS buffer and the game's
+ * key table DS:276C). Many screens loop: wait for the timer (040E:0DCC),
+ * flush, draw, read the keys (the destination screen, 0CE1:1177-11EE: the
+ * plane could not be chosen). On the PC most of a pass was drawing, so a
+ * key pressed came after the flush and was read. Recompiled, the drawing
+ * takes no time and every key comes during the wait, before the flush.
+ * The flush is done here, but it leaves a key pressed that the game has
+ * not looked at yet while it is waiting for one (since the last flush its
+ * key reader has found no new press), and a key held down until it
+ * repeats (on the PC a slow pass always saw one of its repeats; here they
+ * are rarer than the passes). When the game has had a new press since the
+ * last flush, it is acting on it, and the flush takes away all else, as
+ * on the PC: the cave reads fire and a direction, walks to the next cave,
+ * flushes (keys pressed during the walk made it choose again there).
+ * No time limit. */
+int hook_keyboard_flush(void)
+{
+    if (rival_probe) { pop16(); pop16(); return 1; }     /* the rival's test: no flush */
+    if (!rb(R.ds, 0x27EC)) {          /* the game's key handler not installed: BIOS keys */
+        if (!keyboard_keep_pending()) { keyboard_flushed(); return 0; }
+        keyboard_flushed();
+    } else {
+        ww(0x40, 0x1A, rw(0x40, 0x1C));
+        uint8_t shift = rb(R.ds, 0x27EE);
+        for (int sc = 0; sc < 128; sc++) {
+            int keep = keyboard_flush_keep(sc);
+            wb(R.ds, 0x276C + (uint32_t)sc, (uint8_t)(keep ? keep | shift : 0));
+        }
+        keyboard_flushed();           /* a key survives one flush */
+    }
+    pop16();
+    pop16();          /* retf */
+    return 1;
+}
+
+/* 040E:1A35, exit of the key reader 040E:19C5: the game has looked at
+ * the keys */
 void hook_key_read(void)
 {
-    if (R.ax) keyboard_read();
+    keyboard_seen();
 }
+
+/* The game's random numbers (040E:0EB8): x = ror3(x + 0x9248). Most seeds
+ * lie on one cycle of 63331 values, but 2205 lie on short ones (716 values
+ * down to fixed points), where the same few choices come round again and
+ * again. 040E:0E0D, after the seed is set from the BIOS ticks: with
+ * settings.fixed_random a seed off the main cycle is stepped with another
+ * increment until it reaches it (off: as the PC game). */
+static uint16_t rng_step(uint16_t x, uint16_t add)
+{
+    x = (uint16_t)(x + add);
+    return (uint16_t)(x >> 3 | x << 13);
+}
+
+static int rng_main_cycle(uint16_t seed)
+{
+    static uint8_t known[8192];          /* bit per value: on the main cycle */
+    static int ready;
+    if (!ready) {
+        /* 0 lies on the main cycle (its cycle is the long one) */
+        uint16_t x = 0;
+        do { known[x >> 3] |= (uint8_t)(1 << (x & 7)); x = rng_step(x, 0x9248); } while (x != 0);
+        ready = 1;
+    }
+    return known[seed >> 3] >> (seed & 7) & 1;
+}
+
+void hook_random_seed(void)
+{
+    if (!settings.fixed_random) return;
+    uint16_t x = rw(R.ds, 0x2229);
+    while (!rng_main_cycle(x)) x = rng_step(x, 0x1235);
+    ww(R.ds, 0x2229, x);
+}
+
+/* 015A:01F6, the map's destinations are about to be placed: 015A:00D7 takes
+ * the 34 places from the start rand % 30 and a step rand % 5. Two
+ * consecutive numbers of the game's generator are tied (for each start
+ * only 2 of the 5 steps come), so of the 150 maps only 60 could appear.
+ * With settings.fixed_random both are taken from one hash of the
+ * generator's state: all 150, about evenly. */
+void hook_map_shuffle(void)
+{
+    if (!settings.fixed_random) return;
+    uint32_t h = rw(R.ds, 0x2229) * 0x9E3779B1u;
+    h ^= h >> 15;
+    h *= 0x85EBCA77u;
+    h ^= h >> 13;
+    h %= 150;
+    ww(R.ss, R.bp - 4, (uint16_t)(h / 5));          /* start */
+    ww(R.ss, R.bp - 0x60, (uint16_t)(h % 5));       /* step */
+}
+
+/* Draw-then-wait animations (core86.c tick_pct): the ticks slowed while
+ * they run, by the drawing time the original PC added to each step:
+ * the opening dialogue (02F5:0168, 0338: two screen copies and ten
+ * sprites, then 7 ticks), the title's menus (02F5:0AEB, 0D89), the
+ * destination screen (overlay 2, 0C17:02E4: a screen copy every tick) and
+ * the cave's fall (overlay 6, 0C17:160D-1661). */
+void tick_scale_set(int pct);
+void hook_slow_dialogue(void) { tick_scale_set(80); }
+void hook_slow_menu(void) { tick_scale_set(85); }
+void hook_slow_pause(void) { tick_scale_set(80); }
+void hook_slow_destination(void) { tick_scale_set(55); }
+void hook_slow_fall(void) { tick_scale_set(40); }
+void hook_slow_end(void) { tick_scale_set(0); }
 
 /* Overlay 2, 0CE1:026F, after the code wheel check: the game's copy tests
  * BP (always non-zero) instead of the result in AX. With copy protection
@@ -117,21 +252,6 @@ void hook_code_wheel_result(void)
     wb(LOAD_SEG + 0xCE1, 0x270, settings.copy_protection ? 0xC0 : 0xED);
 }
 
-/* 040E:19A5 (far): flushes the keyboard (BIOS buffer and the game's key
- * table). Many screens flush right after waiting for the next timer tick
- * and then read a key; on the original slow PC most of a loop pass was
- * drawing, so a key usually arrived after the flush. Recompiled, the pass
- * is nearly all waiting and the flush would swallow almost every key, so a
- * key pressed in the last 150 ms is kept, if the game has not read it yet:
- * a key it has read is flushed, as on the PC (the cave reads a key, moves,
- * flushes; keeping a read key moved or fired twice per press). */
-int hook_keyboard_flush(void)
-{
-    if (!keyboard_recent(150) || !keyboard_unread()) return 0;
-    pop16();
-    pop16();          /* retf */
-    return 1;
-}
 
 
 

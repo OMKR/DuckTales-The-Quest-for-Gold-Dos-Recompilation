@@ -79,8 +79,13 @@ void video_plane_fill(uint32_t dst, uint32_t n, uint8_t v)
     for (int p = 0; p < 4; p++) memset(&plane[p][dst & 0xFFFF], v, n);
 }
 
+/* the EGA overscan (border) colour, attribute register 11h */
+static uint8_t overscan;
+int video_overscan(void) { return overscan; }
+
 void video_ega_palette(int index, int value)
 {
+    if (index == 0x11) overscan = (uint8_t)value;
     if (index < 16) attr[index] = (uint8_t)value;
 }
 
@@ -318,6 +323,7 @@ void vga_port_out(uint32_t port, uint32_t v)
     case 0x3C0:
         if (!attr_flip) attr_idx = (uint8_t)(v & 0x1F);
         else if (attr_idx < 16) attr[attr_idx] = (uint8_t)v;
+        else if (attr_idx == 0x11) overscan = (uint8_t)v;
         attr_flip ^= 1;
         return;
     }
@@ -432,6 +438,25 @@ void video_frame(void)
     SDL_UpdateTexture(texture, NULL, pixels, W * 4);
     SDL_RenderClear(renderer);
     SDL_RenderCopy(renderer, texture, NULL, NULL);
+    /* The border colour (overscan): the photography game lights it for
+     * the camera's flash (overlay 7, 09B0: DS:2066 = 7, for 4 redraws; EGA
+     * only). The window has no border area: settings.ega_flash draws it
+     * as a frame over the picture's edge, or tints the whole screen. */
+    if (overscan && is_ega() && !amiga_active() && settings.ega_flash) {
+        uint32_t c = ega64(overscan);
+        int ww, wh;
+        SDL_GetRendererOutputSize(renderer, &ww, &wh);
+        SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+        SDL_SetRenderDrawColor(renderer, c >> 16 & 255, c >> 8 & 255, c & 255,
+                               settings.ega_flash == 1 ? 255 : 160);
+        if (settings.ega_flash == 1) {
+            int t = wh / 50 > 2 ? wh / 50 : 2;          /* 4 pixels of 200 */
+            SDL_Rect r[4] = {{0, 0, ww, t}, {0, wh - t, ww, t}, {0, 0, t, wh}, {ww - t, 0, t, wh}};
+            SDL_RenderFillRects(renderer, r, 4);
+        } else {
+            SDL_RenderFillRect(renderer, NULL);
+        }
+    }
     SDL_RenderPresent(renderer);
 }
 

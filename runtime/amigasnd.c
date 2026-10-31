@@ -32,9 +32,11 @@ void amigasnd_request(int n) { (void)n; }
 void amigasnd_scene(int n) { (void)n; }
 void amigasnd_overlay(int n) { (void)n; }
 int amigasnd_speaking(void) { return 0; }
+int amigasnd_playing(int n) { (void)n; return 0; }
 void amigasnd_voices_only(int on) { (void)on; }
 int amigasnd_music(void) { return 0; }
 void amigasnd_set_speech(int on) { (void)on; }
+void amigasnd_set_launchpad_stop(int on) { (void)on; }
 void amigasnd_speech(const int *sets, int n) { (void)sets; (void)n; }
 void amigasnd_text(const char *text) { (void)text; }
 void amigasnd_picture(const char *file, int entry) { (void)file; (void)entry; }
@@ -472,6 +474,9 @@ static int pending_set = -1;
 static int pending_req[8], npending;
 static const int *pending_voice;
 static int pending_voice_n, pending_voice_req;
+static int launchpad_stop = 1;      /* the music stops for Launchpad's screen (Amiga) */
+static uint64_t loud;               /* the last sample heard */
+static int stopping;                /* ticks since a stop that still runs on channel 0 */
 
 static int speech_busy(void)
 {
@@ -499,6 +504,14 @@ static void load_set(int n)
 
 int amigasnd_speaking(void) { return active && speech_busy(); }
 
+int amigasnd_playing(int n)
+{
+    int c = active ? sound_channel(n) : -1;
+    /* some end in silence on a channel that runs on (0x54: 2.6 s) */
+    if (played - loud > 44100 / 10) return 0;
+    return c >= 0 && rl(DATA(0x2A16 + 0x4C * (uint32_t)(c & 3))) != 0;
+}
+
 void amigasnd_scene(int n)
 {
     if (!active) return;
@@ -517,6 +530,7 @@ void amigasnd_overlay(int n)
  * game picks at random, then sound 0x77 plays it. A trigger seen again
  * within 3 s (a redrawn text) is ignored. */
 void amigasnd_set_speech(int on) { speech_on = on; }
+void amigasnd_set_launchpad_stop(int on) { launchpad_stop = on; }
 void amigasnd_voices_only(int on) { voices_only = on; }
 int amigasnd_music(void) { return active && !voices_only; }
 
@@ -526,7 +540,7 @@ static void speak(const int *sets, int n, int req)
     static uint64_t last_time;
     if (!active || n <= 0 || !speech_on) return;
     if (sets == last && (speech_busy() || played - last_time < 3 * 44100)) return;
-    if (speech_busy()) {
+    if (speech_busy() || stopping) {
         pending_voice = sets;
         pending_voice_n = n;
         pending_voice_req = req;
@@ -559,6 +573,26 @@ static void resume(void)
         if (q[k] != 0 || k == nq - 1) amigasnd_request(q[k]);
 }
 
+/* The Amiga game stops the music before a scene's first line (the
+ * office's Launchpad, node 1 0x7EC-0x800; the campfire, node 0 0x386-0x3AE:
+ * sound 0x21, a wait, a stop). The DOS game stops it later (campfire) or
+ * not at all (Launchpad). Here the music is stopped at once, before the
+ * voice: waiting for channel 0, as the Amiga does, held the voice back for
+ * seconds when the map's music played there (the second trip on). The
+ * engine's stop runs a short program on channel 0 from its next tick; a
+ * voice started before that has ended was cut off at once, so it waits
+ * (up to half a second). Not
+ * with Tandy / speaker sound (their music is the DOS game's). */
+static void stop_music(void)
+{
+    uint32_t z = 0;
+    if (voices_only) return;
+    npending = 0;
+    call0(0x57D2, 1, &z, 0);
+    service();
+    stopping = 1;
+}
+
 /* Voices tied to what the DOS game shows: the office's Launchpad (texts,
  * Amiga node 1 0x832) and the map's pictures (MAIN.ARC 36-39, node 2
  * 0x1A3A-0x1B86). the rival's taunts have a jingle (sound 0x6E). */
@@ -588,7 +622,7 @@ void amigasnd_text(const char *text)
     if (!active) return;
     uint32_t h = text_hash(text);
     for (size_t k = 0; k < sizeof texts / sizeof texts[0]; k++)
-        if (h == texts[k].hash) amigasnd_speech(texts[k].sets, texts[k].n);
+        if (h == texts[k].hash) speak(texts[k].sets, texts[k].n, 0x77);
     for (size_t k = 0; k < sizeof taunts / sizeof taunts[0]; k++)
         if (h == taunts[k] && played - jingle_time > 3 * 44100) {
             jingle_time = played;
@@ -603,8 +637,9 @@ void amigasnd_picture(const char *file, int entry)
     const char *a = "MAIN.ARC", *b = file;
     while (*a && (*b == *a || *b == *a + 32)) { a++; b++; }
     if (*a || *b) return;
-    static const int campfire[] = {0x19};    /* node 0 0x33E: the Junior Woodchucks' camp */
-    if (entry == 31) speak(campfire, 1, 0x71);
+    /* Launchpad's screen (MAIN.ARC 30): the music stops as it loads
+     * (amigasnd_set_launchpad_stop; the DOS game plays on) */
+    if (entry == 30 && launchpad_stop) stop_music();
     else if (entry == 35) {                     /* the treasure (node 1 0xD62) */
         static const int t1[] = {0x0B}, t2[] = {0x18};
         /* one comment per treasure: the game loads the picture more than
@@ -624,15 +659,18 @@ void amigasnd_picture(const char *file, int entry)
     else if (entry == 38) amigasnd_speech(map_c, 2);
 }
 
-/* The plane's landing (Amiga node 3 0x1250) and the scales' result (node 4
- * 0xC02: the player's money above the rival's, or not). */
+/* The plane's landing (Amiga node 3 0x1250), the scales' result (node 4
+ * 0xC02: the player's money above the rival's, or not) and the campfire
+ * (hook_campfire). */
 void amigasnd_event(int event)
 {
     static const int landed[] = {0x06, 0x13, 0x14};
     static const int won[] = {0x1A, 0x1F, 0x20}, lost[] = {0x1D, 0x21, 0x23, 0x24, 0x25, 0x26};
+    static const int campfire[] = {0x19};    /* node 0 0x33E: the Junior Woodchucks' camp */
     if (event == AMIGASND_LANDED) amigasnd_speech(landed, 3);
     else if (event == AMIGASND_SCALES_WON) amigasnd_speech(won, 3);
     else if (event == AMIGASND_SCALES_LOST) amigasnd_speech(lost, 6);
+    else if (event == AMIGASND_CAMPFIRE) { stop_music(); speak(campfire, 1, 0x71); }
 }
 
 void amigasnd_request(int n)
@@ -682,6 +720,7 @@ void amigasnd_render(int32_t *buf, int n, int rate, int music_pct)
             call0(0x58BC, 0, NULL, 0);
             music_open = 0;
             service();
+            if (stopping && ((stopping++ > 1 && !rl(DATA(0x2A16))) || stopping > 25)) stopping = 0;
             if (!speech_busy() && (pending_set >= 0 || npending || pending_voice)) resume();
         }
         int mix = 0;
@@ -706,6 +745,7 @@ void amigasnd_render(int32_t *buf, int n, int rate, int music_pct)
             }
         }
         buf[s] += mix;
+        if (mix > 64 || mix < -64) loud = played + (uint64_t)s;
     }
     played += (uint64_t)n;
 }
